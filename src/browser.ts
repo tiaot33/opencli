@@ -221,10 +221,15 @@ export class PlaywrightMCP {
     return new Promise<Page>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`Timed out connecting to browser (${timeout}s)`)), timeout * 1000);
 
-      this._proc = spawn('node', [mcpPath, '--extension'], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, ...(process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN } : {}) },
-      });
+      const mcpArgs = [mcpPath, '--extension'];
+    if (process.env.OPENCLI_BROWSER_EXECUTABLE_PATH) {
+      mcpArgs.push('--executablePath', process.env.OPENCLI_BROWSER_EXECUTABLE_PATH);
+    }
+
+    this._proc = spawn('node', mcpArgs, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, ...(process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: process.env.PLAYWRIGHT_MCP_EXTENSION_TOKEN } : {}) },
+    });
 
       // Increase max listeners to avoid warnings
       this._proc.setMaxListeners(20);
