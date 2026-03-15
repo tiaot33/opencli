@@ -131,7 +131,7 @@ Explore outputs to `.opencli/explore/<site>/`:
 
 ## 🔧 Create New Commands
 
-See **[SKILL.md](./SKILL.md)** for the full adapter guide (YAML pipeline + TypeScript).
+See **[CLI-CREATOR.md](./CLI-CREATOR.md)** for the full adapter guide (YAML pipeline + TypeScript).
 
 ## Releasing New Versions
 

@@ -132,7 +132,7 @@ opencli cascade https://api.example.com/data
 
 ## 🔧 创建新命令
 
-查看 **[SKILL.md](./SKILL.md)** 了解完整的适配器开发指南（YAML pipeline + TypeScript）。
+查看 **[CLI-CREATOR.md](./CLI-CREATOR.md)** 了解完整的适配器开发指南（YAML pipeline + TypeScript）。
 
 ## 版本发布
 
