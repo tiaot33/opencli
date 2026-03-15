@@ -296,6 +296,28 @@ export class Page implements IPage {
  * Playwright MCP process manager.
  */
 export class PlaywrightMCP {
+  private static _activeInsts: Set<PlaywrightMCP> = new Set();
+  private static _cleanupRegistered = false;
+
+  private static _registerGlobalCleanup() {
+    if (this._cleanupRegistered) return;
+    this._cleanupRegistered = true;
+    const cleanup = () => {
+      for (const inst of this._activeInsts) {
+        if (inst._lockAcquired) {
+          try { fs.rmdirSync(LOCK_DIR); } catch {}
+          inst._lockAcquired = false;
+        }
+        if (inst._proc && !inst._proc.killed) {
+          try { inst._proc.kill('SIGKILL'); } catch {}
+        }
+      }
+    };
+    process.on('exit', cleanup);
+    process.on('SIGINT', () => { cleanup(); process.exit(130); });
+    process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+  }
+
   private _proc: ChildProcess | null = null;
   private _buffer = '';
   private _waiters: Array<(data: any) => void> = [];
@@ -326,7 +348,13 @@ export class PlaywrightMCP {
     }
 
     return new Promise<Page>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`Timed out connecting to browser (${timeout}s)`)), timeout * 1000);
+      const isDebug = process.env.DEBUG?.includes('opencli:mcp');
+      const debugLog = (msg: string) => isDebug && console.error(`[opencli:mcp] ${msg}`);
+
+      const timer = setTimeout(() => {
+        debugLog('Connection timed out');
+        reject(new Error(`Timed out connecting to browser (${timeout}s)`));
+      }, timeout * 1000);
 
       const mcpArgs: string[] = [mcpPath];
       if (cdpEndpoint) {
@@ -340,6 +368,7 @@ export class PlaywrightMCP {
       if (process.env.OPENCLI_BROWSER_EXECUTABLE_PATH) {
         mcpArgs.push('--executablePath', process.env.OPENCLI_BROWSER_EXECUTABLE_PATH);
       }
+      debugLog(`Spawning node ${mcpArgs.join(' ')}`);
 
       this._proc = spawn('node', mcpArgs, {
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -362,16 +391,26 @@ export class PlaywrightMCP {
         this._buffer = lines.pop() ?? '';
         for (const line of lines) {
           if (!line.trim()) continue;
+          debugLog(`RECV: ${line}`);
           try {
             const parsed = JSON.parse(line);
             const waiter = this._waiters.shift();
             if (waiter) waiter(parsed);
-          } catch {}
+          } catch (e) {
+            debugLog(`Parse error: ${e}`);
+          }
         }
       });
 
-      this._proc.stderr?.on('data', () => {});
-      this._proc.on('error', (err) => { clearTimeout(timer); reject(err); });
+      this._proc.stderr?.on('data', (chunk) => debugLog(`STDERR: ${chunk}`));
+      this._proc.on('error', (err) => {
+        debugLog(`Subprocess error: ${err.message}`);
+        clearTimeout(timer);
+        reject(err);
+      });
+      this._proc.on('close', (code) => {
+        debugLog(`Subprocess closed with code ${code}`);
+      });
 
       // Initialize: send initialize request
       const initMsg = jsonRpcRequest('initialize', {
@@ -379,16 +418,24 @@ export class PlaywrightMCP {
         capabilities: {},
         clientInfo: { name: 'opencli', version: PKG_VERSION },
       });
+      debugLog(`SEND: ${initMsg.trim()}`);
       this._proc.stdin?.write(initMsg);
 
       // Wait for initialize response, then send initialized notification
       const origRecv = () => new Promise<any>((res) => { this._waiters.push(res); });
+      debugLog('Waiting for initialize response...');
       origRecv().then((resp) => {
+        debugLog('Got initialize response');
         if (resp.error) { clearTimeout(timer); reject(new Error(`MCP init failed: ${resp.error.message}`)); return; }
-        this._proc?.stdin?.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+        
+        const initializedMsg = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n';
+        debugLog(`SEND: ${initializedMsg.trim()}`);
+        this._proc?.stdin?.write(initializedMsg);
 
         // Get initial tab count for cleanup
+        debugLog('Fetching initial tabs count...');
         page.tabs().then((tabs: any) => {
+          debugLog(`Tabs response: ${typeof tabs === 'string' ? tabs : JSON.stringify(tabs)}`);
           if (typeof tabs === 'string') {
             this._initialTabCount = (tabs.match(/Tab \d+/g) || []).length;
           } else if (Array.isArray(tabs)) {
@@ -396,8 +443,16 @@ export class PlaywrightMCP {
           }
           clearTimeout(timer);
           resolve(page);
-        }).catch(() => { clearTimeout(timer); resolve(page); });
-      }).catch((err) => { clearTimeout(timer); reject(err); });
+        }).catch((err) => {
+          debugLog(`Tabs fetch error: ${err.message}`);
+          clearTimeout(timer);
+          resolve(page);
+        });
+      }).catch((err) => {
+        debugLog(`Init promise rejected: ${err.message}`);
+        clearTimeout(timer);
+        reject(err);
+      });
     });
   }
 
@@ -427,6 +482,7 @@ export class PlaywrightMCP {
     } finally {
       this._page = null;
       this._releaseLock();
+      PlaywrightMCP._activeInsts.delete(this);
     }
   }
 

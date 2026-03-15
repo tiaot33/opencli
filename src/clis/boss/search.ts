@@ -87,6 +87,9 @@ cli({
 
     const cityCode = resolveCity(kwargs.city);
     
+    if (process.env.OPENCLI_VERBOSE || process.env.DEBUG?.includes('opencli')) {
+      console.error(`[opencli:boss] Navigating to set referrer context...`);
+    }
     // Navigate to the Web search view first to establish proper referrer context
     // This is a lesson learned from boss-cli: referrer is important
     await page.goto(`https://www.zhipin.com/web/geek/job?query=${encodeURIComponent(kwargs.query)}&city=${cityCode}`);
@@ -124,21 +127,31 @@ cli({
 
       const targetUrl = `https://www.zhipin.com/wapi/zpgeek/search/joblist.json?${qs.toString()}`;
 
+      if (process.env.OPENCLI_VERBOSE || process.env.DEBUG?.includes('opencli')) {
+        console.error(`[opencli:boss] Fetching page ${currentPage}... (current jobs: ${allJobs.length})`);
+      }
+
       const evaluateScript = `
         async () => {
           return new Promise((resolve, reject) => {
             const xhr = new window.XMLHttpRequest();
             xhr.open('GET', '${targetUrl}', true);
             xhr.withCredentials = true;
+            xhr.timeout = 15000; // 15s timeout
             xhr.setRequestHeader('Accept', 'application/json, text/plain, */*');
             xhr.onload = () => {
-              try {
-                resolve(JSON.parse(xhr.responseText));
-              } catch (e) {
-                reject(new Error('Failed to parse JSON. Raw API response (first 200 chars): ' + xhr.responseText.substring(0, 200)));
+              if (xhr.status >= 200 && xhr.status < 300) {
+                try {
+                  resolve(JSON.parse(xhr.responseText));
+                } catch (e) {
+                  reject(new Error('Failed to parse JSON. Raw (200 chars): ' + xhr.responseText.substring(0, 200)));
+                }
+              } else {
+                reject(new Error('XHR HTTP Status: ' + xhr.status));
               }
             };
             xhr.onerror = () => reject(new Error('XHR Network Error'));
+            xhr.ontimeout = () => reject(new Error('XHR Timeout'));
             xhr.send();
           });
         }
@@ -164,6 +177,7 @@ cli({
         break; // No more results
       }
 
+      let addedInBatch = 0;
       for (const j of batch) {
         if (!j.encryptJobId || seenIds.has(j.encryptJobId)) continue;
         seenIds.add(j.encryptJobId);
@@ -179,7 +193,14 @@ cli({
           boss: j.bossName + ' · ' + j.bossTitle,
           url: 'https://www.zhipin.com/job_detail/' + j.encryptJobId + '.html',
         });
+        addedInBatch++;
         if (allJobs.length >= limit) break;
+      }
+
+      if (addedInBatch === 0) {
+        // Boss API is repeating identical pages, we've hit the pagination limit
+        if (process.env.OPENCLI_VERBOSE) console.error(`[opencli:boss] API returned duplicate page, stopping pagination at ${allJobs.length} items`);
+        break;
       }
 
       if (!zpData.hasMore) {
