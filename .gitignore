@@ -5,3 +5,8 @@ dist/
 .opencli/
 .mcp.json
 *.log
+
+# Extensions & Secrets
+*.pem
+*.crx
+*.zip
